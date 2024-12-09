@@ -16,8 +16,34 @@ on:
   pull_request:
     branches:
       - main
+  workflow_dispatch:
 
 jobs:
+  get-latest-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.get-tag.outputs.tag }}
+      previous_tag: ${{ steps.get-previous-tag.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - id: get-tag
+        run: |
+          if [ "${{ github.event_name }}" = "push" ]; then
+            # 如果是push触发，使用触发的tag
+            echo "tag=${GITHUB_REF#refs/tags/}" >> $GITHUB_OUTPUT
+          else
+            # 如果是手动触发，获取分支上最新的tag
+            LATEST_TAG=$(git describe --tags --abbrev=0)
+            echo "tag=$LATEST_TAG" >> $GITHUB_OUTPUT
+          fi
+      - id: get-previous-tag
+        run: |
+          CURRENT_TAG=${{ steps.get-tag.outputs.tag }}
+          PREVIOUS_TAG=$(git describe --tags --abbrev=0 "${CURRENT_TAG}^" || echo '')
+          echo "tag=$PREVIOUS_TAG" >> $GITHUB_OUTPUT
+
   build:
     strategy:
       fail-fast: true
@@ -62,7 +88,6 @@ jobs:
           go-version: "1.20.14"
 
       - name: Build Test
-        if: github.event_name != 'push' || !contains(github.ref, 'refs/tags/')
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -70,7 +95,6 @@ jobs:
           args: build --single-target --clean --snapshot
 
       - name: Build
-        if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
@@ -89,8 +113,7 @@ jobs:
 
   release:
     runs-on: ubuntu-latest
-    if: github.event_name == 'push' && contains(github.ref, 'refs/tags/')
-    needs: build
+    needs: [get-latest-tag, build]
     name: Release
     steps:
       - name: Download artifacts
@@ -101,16 +124,29 @@ jobs:
       - name: Checksum
         run: sha256sum ./assets/*/*.zip | awk -F" |/" '{print $1, $NF}' > checksums.txt
 
+      - name: Generate Release Body
+        id: release_body
+        run: |
+          CURRENT_TAG=${{ needs.get-latest-tag.outputs.tag }}
+          PREVIOUS_TAG=${{ needs.get-latest-tag.outputs.previous_tag }}
+          echo "# What's Changed" > release_body.md
+          echo "" >> release_body.md
+          if [ -n "$PREVIOUS_TAG" ]; then
+            echo "Full Changelog: [$PREVIOUS_TAG...$CURRENT_TAG](https://github.com/${{ github.repository }}/compare/$PREVIOUS_TAG...$CURRENT_TAG)" >> release_body.md
+          else
+            echo "First Release" >> release_body.md
+          fi
+          echo "" >> release_body.md
+          echo "## Changelog" >> release_body.md
+          git log --pretty=format:"* %s" $PREVIOUS_TAG..$CURRENT_TAG >> release_body.md
+
       - name: Release
         uses: ncipollo/release-action@v1
         with:
+          tag: ${{ needs.get-latest-tag.outputs.tag }}
           artifacts: "checksums.txt,assets/*/*.zip"
+          allowUpdates: true
+          makeLatest: true
+          replacesArtifacts: true
           generateReleaseNotes: true
-
-      - name: Trigger sync
-        env:
-          GH_REPO: ${{ github.repository }}
-          GH_TOKEN: ${{ github.token }}
-          GH_DEBUG: api
-        run: |
-          gh workflow run sync-release.yml
+          bodyFile: release_body.md
