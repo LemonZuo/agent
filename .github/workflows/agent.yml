@@ -92,14 +92,14 @@ jobs:
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: build --single-target --clean --snapshot
+          args: build --single-target --clean --skip=validate --snapshot
 
       - name: Build
         uses: goreleaser/goreleaser-action@v6
         with:
           distribution: goreleaser
           version: '~> v2'
-          args: build --single-target --clean
+          args: build --single-target --clean --skip=validate
 
       - name: Archive
         run: zip -jr dist/nezha-agent_${GOOS}_${GOARCH}.zip dist/*/*
